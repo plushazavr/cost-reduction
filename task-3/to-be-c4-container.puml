@@ -1,0 +1,139 @@
+@startuml VitaStore_TO_BE_C4_Container_v2
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+title "VitaStore — TO-BE C4 Container Diagram v2 (с учётом Task1/Task2)"
+
+' ===== Акторы =====
+Person(cashier, "Кассир / Продавец", "Работает с планшетом в магазине")
+Person(merch, "Товаровед / Категорийный менеджер", "Верифицирует Medium/Low матчинги в Verification UI")
+Person(catman, "Категорийный менеджер (HQ)", "Управляет ассортиментом в SAP")
+Person(ops, "ИТ-поддержка (HQ)", "Централизованный мониторинг и эксплуатация")
+Person(iteng, "ИТ-инженер онбординга", "Загружает дамп купленной сети в Onboarding Orchestrator")
+
+' ===== Магазин (Edge) =====
+System_Boundary(store, "Магазин (Edge)") {
+  Container(webpos, "Cloud POS (PWA)", "Web-приложение на планшете", "UI кассира. Онлайн — через API; офлайн — Service Worker + IndexedDB")
+  ContainerDb(localcache, "Локальный кэш", "IndexedDB на планшете", "Каталог, цены, промо, баланс лояльности, очередь чеков")
+  Container(edgeagent, "Edge Agent (HAL-хост)", "Лёгкий сервис на планшете/Edge Node", "Транслирует команды Web POS в HAL-драйверы. Работает без интернета")
+  Container(hal, "Hardware Abstraction Layer", "Слой драйверов в Edge Agent", "Единый интерфейс: printReceipt, pay, openDrawer, scan")
+  Container(paymentterm, "Банковский терминал", "Сбер / Альфа / Ingenico / Verifone", "Общается только с HAL-драйвером")
+  Container(fiscal, "Фискальный регистратор", "Разнородные модели (54-ФЗ)", "Печать чеков через HAL")
+  Container(scanner, "Сканер ШК / принтер ценников", "USB/BT", "Через HAL")
+}
+
+' ===== Облако =====
+System_Boundary(cloud, "VitaStore Cloud (PaaS/IaaS + SaaS)") {
+  Container(api, "API Gateway / BFF", "Kong / AWS API GW", "Единая точка входа, auth, rate-limiting")
+  Container(posbackend, "POS Backend", "Kubernetes", "Корзина, чеки, скидки, фискализация")
+  Container(sync, "Sync Service", "Kubernetes", "Приём офлайн-очереди, идемпотентность по client_txn_id")
+  Container(paymentgw, "Payment Gateway", "Kubernetes + эквайеры", "Абстракция над банками/терминалами, роутинг, токенизация")
+  Container(onboarding, "Onboarding Orchestrator", "Temporal / Airflow", "Оркестрация онбординга: импорт → матчинг → верификация → pre-flight → публикация")
+  Container(skumatcher, "SKU Matcher (AI)", "Managed AI", "Fuzzy + ML + barcode. Возвращает confidence score (High/Medium/Low)")
+  Container(verifyui, "Verification UI", "Web-приложение", "Очередь Medium/Low, Confirm/Change/Create, подсказки")
+  Container(preflight, "Pre-flight Checker", "Kubernetes job", "50 случайных SKU → проверка каталога/ШК/цены. Порог 98%")
+  Container(postopen, "Post-open Monitor", "Observability", "7 дней: ошибки ШК на кассе, порог 2% → обратный маппинг")
+  ContainerDb(clouddb, "Cloud DB", "Managed PostgreSQL", "Номенклатура, цены, промо, чеки, маппинги")
+  Container(cache, "Redis / CDN", "Managed", "Кэш каталога и промо для Edge")
+  Container(messagebus, "Message Bus", "Kafka / RabbitMQ", "Асинхронные события чеков, синхронизация, аудит")
+  Container(monitoring, "Observability", "Prometheus / Grafana / Loki", "Мониторинг offline-режима, HAL-ошибок, health магазинов")
+}
+
+' ===== HQ =====
+System_Boundary(hq, "Центральный офис (HQ)") {
+  Container(sap, "SAP ERP", "On-prem / private cloud", "Учёт товаров, кадров, финансов. Мастер номенклатуры и цен")
+  Container(promo, "Promo Engine", "On-prem → cloud", "Движок промоакций (in-house, конкурентное преимущество)")
+  Container(fulfillment, "Smart Fulfillment", "On-prem → cloud", "Омниканальная логистика, Click & Collect")
+}
+
+' ===== Внешние SaaS =====
+System_Ext(loyalty, "Loyalty Service (SaaS)", "Облачный loyalty-сервис", "Балансы, начисление/списание, сегменты")
+System_Ext(marketing, "Email/Push (SaaS)", "SendGrid / Amazon SES", "Маркетинговые рассылки")
+System_Ext(wms, "WMS (Cloud SaaS/PaaS)", "Облачный WMS", "Приёмка, перемещение, инвентаризация")
+System_Ext(acquirer, "Эквайеры / банки", "Сбер, Альфа и др.")
+System_Ext(fns, "ОФД", "Фискальный оператор (54-ФЗ)")
+System_Ext(idp, "IdP (SSO)", "Azure AD / Keycloak")
+
+' ===== Связи магазин =====
+Rel(cashier, webpos, "Работает с корзиной")
+Rel(webpos, localcache, "Читает кэш, пишет очередь чеков")
+Rel(webpos, edgeagent, "printReceipt / pay / openDrawer", "Local REST/WS")
+Rel(edgeagent, hal, "Унифицированный интерфейс")
+Rel(hal, paymentterm, "Драйвер pay()", "USB/COM/SDK")
+Rel(hal, fiscal, "Драйвер fiscalize()", "USB/COM")
+Rel(hal, scanner, "Драйвер scan()", "USB/BT")
+
+' ===== Связи магазин ↔ облако =====
+Rel(webpos, api, "REST/HTTPS (онлайн)")
+Rel(edgeagent, api, "Heartbeat, телеметрия", "HTTPS")
+Rel(sync, localcache, "Pull каталога, push очереди", "HTTPS delta-sync")
+
+' ===== Связи облако =====
+Rel(api, posbackend, "Маршрутизация")
+Rel(posbackend, clouddb, "Чтение/запись", "SQL")
+Rel(posbackend, cache, "Кэш каталога/промо")
+Rel(posbackend, paymentgw, "Инициирует платёж")
+Rel(posbackend, loyalty, "Начисление/списание баллов", "HTTPS")
+Rel(posbackend, messagebus, "События чеков")
+Rel(sync, clouddb, "Идемпотентная запись чеков")
+Rel(sync, messagebus, "Reconciliation-события")
+Rel(onboarding, skumatcher, "Отправляет дамп на матчинг")
+Rel(onboarding, verifyui, "Публикует очередь Medium/Low")
+Rel(onboarding, preflight, "Запускает pre-flight")
+Rel(onboarding, clouddb, "Пишет утверждённые маппинги")
+Rel(onboarding, posbackend, "Деплой конфигурации магазина")
+Rel(skumatcher, clouddb, "Читает эталон, пишет score")
+Rel(verifyui, clouddb, "Обновляет маппинги")
+Rel(preflight, posbackend, "Проверка каталога/ШК/цены")
+Rel(postopen, monitoring, "Метрики ошибок ШК")
+Rel(postopen, onboarding, "Триггер обратного маппинга (>2%)")
+Rel(paymentgw, acquirer, "Авторизация/возврат", "HTTPS")
+Rel(posbackend, fns, "Фискализация", "HTTPS")
+Rel(api, idp, "Валидация токенов", "OIDC")
+
+' ===== Связи HQ =====
+Rel(sap, clouddb, "CDC номенклатуры/цен")
+Rel(sap, promo, "Условия акций")
+Rel(sap, fulfillment, "Остатки")
+Rel(fulfillment, wms, "Остатки и перемещения", "API")
+Rel(sap, marketing, "Сегменты для рассылок", "API")
+Rel(merch, verifyui, "Верифицирует Medium/Low")
+Rel(iteng, onboarding, "Загружает дамп купленной сети")
+Rel(ops, monitoring, "Дашборды и алерты")
+
+' ===== Аннотации =====
+note right of hal
+  **HAL**: кассовый софт не знает про USB/COM.
+  Новый терминал = новый драйвер (INC-8415:
+  ARCUS-2 решается за дни, не 3 недели).
+end note
+
+note right of localcache
+  **Offline**: Service Worker + IndexedDB.
+  Кэшируются каталог, промо И баланс лояльности
+  → закрывает INC-8402 (карты работают офлайн).
+end note
+
+note bottom of onboarding
+  **Онбординг 14д → 5д**: оркестратор +
+  SKU Matcher (75% авто) + Verification UI
+  (25% ручной, ускорение x4) + pre-flight 98%
+end note
+
+note bottom of sync
+  **Идемпотентность**: client_txn_id (UUID с планшета)
+  исключает дубли. Конфликты — last-write-wins
+  по версии каталога + журнал операций.
+end note
+
+note bottom of paymentgw
+  **Payment Gateway**: единый контракт
+  authorize/capture/refund. Смена банка = конфиг.
+end note
+
+note top of edgeagent
+  Edge Agent = локальный сервис на планшете
+  (Android USB-host) или на дешёвом Edge Node.
+  В облаке не нужен — работает при offline.
+end note
+
+@enduml
