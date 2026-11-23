@@ -1,0 +1,82 @@
+@startuml VitaStore_AS_IS_C4_Container
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+title "VitaStore — AS-IS C4 Container Diagram (магазин + HQ)"
+
+' ===== Акторы =====
+Person(cashier, "Кассир / Продавец", "Сотрудник магазина. Работает с кассой и бэк-офисом")
+Person(merch, "Товаровед (HQ)", "Сотрудник Data Integration. Вручную маппит номенклатуру через VLOOKUP в Excel")
+Person(iteng, "Выездной ИТ-инженер", "Едет в магазин, снимает дамп БД, настраивает локальный сервер")
+Person(catman, "Категорийный менеджер", "Управляет ассортиментом в HQ (SAP ERP)")
+
+' ===== Магазин =====
+System_Boundary(store, "Магазин (каждый из 500+)") {
+  Container(pos, "Касса (толстый клиент)", "Desktop-приложение (Windows)", "Пробитие чеков, применение скидок и карт лояльности. Прямая интеграция с банковским терминалом через драйверы")
+  Container(backoffice, "Бэк-офис магазина", "Desktop-приложение (Windows)", "Приём товара, локальный расчёт премий, печать ценников, инкассация")
+  ContainerDb(localdb, "Локальная БД", "MS SQL Server / PostgreSQL", "Хранит номенклатуру, цены, остатки, чеки. Синхронизируется с SAP ночью по FTP")
+  Container(paymentterm, "Банковский терминал", "Сбербанк / Альфа / Ingenico / Verifone", "Разнородный парк. Уникальные драйверы под каждую модель, жёсткая связка с кассой")
+  Container(fiscal, "Фискальный регистратор", "Разнородные модели", "Печать фискальных чеков (54-ФЗ)")
+}
+
+' ===== Центральный офис (HQ) =====
+System_Boundary(hq, "Центральный офис (HQ)") {
+  Container(sap, "SAP ERP", "On-premises, мощный кластер", "Учёт товаров, кадров, финансов. Мастер-система номенклатуры и цен")
+  Container(promo, "Promo Engine", "On-premises", "Единый движок промоакций и скидок")
+  Container(fulfillment, "Smart Fulfillment", "On-premises", "Омниканальная логистика, Click & Collect")
+  Container(excel, "Excel + VLOOKUP", "Рабочие места товароведов", "Ручной маппинг номенклатуры купленных магазинов с эталоном SAP")
+  Container(ftp, "FTP-сервер обмена", "On-premises", "Ночная рассылка XML-прайсов в 02:00 на локальные БД магазинов")
+  Container(email, "Корпоративная почта", "Exchange / SMTP", "Приём дампов БД от выездных инженеров (data-integration@vitastore.ru)")
+}
+
+' ===== Связи =====
+Rel(cashier, pos, "Пробивает чеки, применяет скидки")
+Rel(cashier, backoffice, "Принимает товар, печатает ценники")
+Rel(pos, paymentterm, "Оплата картой", "Проприетарный драйвер (USB/COM)")
+Rel(pos, fiscal, "Фискализация чека", "Драйвер производителя")
+Rel(pos, localdb, "Читает номенклатуру, пишет чеки", "JDBC/ODBC")
+Rel(backoffice, localdb, "Читает/пишет товары, премии", "JDBC/ODBC")
+
+Rel(iteng, pos, "Снимает дамп БД в CSV/XLS при онбординге")
+Rel(iteng, email, "Отправляет дамп на data-integration@vitastore.ru", "SMTP")
+Rel(email, excel, "Товаровед забирает файл")
+Rel(merch, excel, "Ручной маппинг через VLOOKUP (~500 поз./час)")
+Rel(excel, sap, "Загрузка сведённой таблицы", "Ручной импорт")
+Rel(sap, ftp, "Формирует XML-пакет обновлений", "02:00")
+Rel(ftp, localdb, "Рассылка прайс-листов", "FTP, ночной батч")
+Rel(catman, sap, "Управляет ассортиментом")
+
+Rel(sap, promo, "Передаёт условия акций")
+Rel(sap, fulfillment, "Передаёт данные об остатках")
+Rel(pos, promo, "Запрашивает скидки (через локальную БД, ночной синк)")
+
+' ===== Аннотации проблем =====
+note right of localdb
+  **Проблема:** локальный сервер в подсобке
+  на каждый из 500+ магазинов.
+  Отказ диска = остановка магазина (INC-8433).
+end note
+
+note bottom of paymentterm
+  **Проблема:** разнородные терминалы,
+  уникальные драйверы. Новый протокол
+  (ARCUS-2) = 3 недели разработки (INC-8415).
+end note
+
+note bottom of ftp
+  **Факт:** real-time интеграции с SAP НЕТ.
+  Только ночной FTP-батч + ручной труд.
+end note
+
+note top of excel
+  **Проблема:** 80% ассортимента
+  просматривается вручную. 15% ошибок
+  маппинга → не бьются штрихкоды/цены.
+end note
+
+note right of pos
+  **Проблема:** при обрыве интернета
+  касса работает офлайн, но карты
+  лояльности недоступны (INC-8402).
+end note
+
+@enduml
